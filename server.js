@@ -2,26 +2,15 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
-const twilio = require('twilio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
-app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  methods: ['GET', 'POST']
-}));
+app.use(cors({ origin: process.env.FRONTEND_URL || '*', methods: ['GET', 'POST'] }));
 app.use(express.json({ limit: '15mb' }));
-app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
-// ─── PROMPT PRINCIPAL ─────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `Eres ExamIA, un asistente educativo especializado en explicar resultados de exámenes médicos en lenguaje simple y claro para pacientes chilenos.
 
 REGLAS ESTRICTAS:
@@ -55,7 +44,6 @@ Reglas scenario: cardiovascular=colesterol/triglicéridos/corazón, metabolico=g
 
 IMPORTANTE: Esta herramienta es informativa y educativa. No reemplaza la consulta médica.`;
 
-// ─── ENDPOINT WEB: ANALIZAR EXAMEN ────────────────────────────────────────────
 app.post('/analyze', async (req, res) => {
   const { file, mediaType, fileName } = req.body;
 
@@ -73,25 +61,13 @@ app.post('/analyze', async (req, res) => {
 
     if (mediaType === 'application/pdf') {
       messageContent = [
-        {
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: file }
-        },
-        {
-          type: 'text',
-          text: 'Por favor analiza este examen médico y explícalo siguiendo las instrucciones del sistema.'
-        }
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file } },
+        { type: 'text', text: 'Por favor analiza este examen médico y explícalo siguiendo las instrucciones del sistema.' }
       ];
     } else {
       messageContent = [
-        {
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: file }
-        },
-        {
-          type: 'text',
-          text: 'Por favor analiza este examen médico y explícalo siguiendo las instrucciones del sistema.'
-        }
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: file } },
+        { type: 'text', text: 'Por favor analiza este examen médico y explícalo siguiendo las instrucciones del sistema.' }
       ];
     }
 
@@ -107,16 +83,15 @@ app.post('/analyze', async (req, res) => {
     const interpretation = interpretationRaw.trim();
 
     let visual = null;
-    if(visualRaw) {
+    if (visualRaw) {
       try {
         const jsonStr = visualRaw.trim().replace(/```json|```/g, '').trim();
         visual = JSON.parse(jsonStr);
-      } catch(e) {
+      } catch (e) {
         visual = { scenario: 'cardiovascular', detected_scenarios: ['cardiovascular'] };
       }
     }
 
-    // NO guardamos el examen — solo retornamos la interpretación
     res.json({ interpretation, visual, success: true });
 
   } catch (err) {
@@ -125,118 +100,6 @@ app.post('/analyze', async (req, res) => {
   }
 });
 
-// ─── WEBHOOK WHATSAPP (TWILIO) ─────────────────────────────────────────────────
-app.post('/whatsapp', async (req, res) => {
-  const { Body, NumMedia, MediaUrl0, MediaContentType0, From } = req.body;
-
-  const twiml = new twilio.twiml.MessagingResponse();
-
-  // Saludo inicial
-  if (Body && Body.trim().toLowerCase() === 'hola' && !NumMedia) {
-    twiml.message(`¡Hola! 👋 Soy *ExamIA*, tu asistente para entender exámenes médicos.
-
-Envíame una *foto clara de tu examen* (hemograma, bioquímica, hormonas, etc.) y te lo explico en lenguaje simple en segundos.
-
-📌 *Importante*: Soy una herramienta educativa. Mi explicación no reemplaza a tu médico.`);
-    res.type('text/xml').send(twiml.toString());
-    return;
-  }
-
-  // Recibió imagen
-  if (NumMedia && parseInt(NumMedia) > 0 && MediaUrl0) {
-    const contentType = MediaContentType0 || 'image/jpeg';
-
-    if (!contentType.startsWith('image/')) {
-      twiml.message('Solo puedo analizar imágenes por ahora. Toma una foto de tu examen y envíala 📸');
-      res.type('text/xml').send(twiml.toString());
-      return;
-    }
-
-    // Confirmación inmediata
-    twiml.message('📄 Recibí tu examen. Analizando... dame unos segundos ⏳');
-    res.type('text/xml').send(twiml.toString());
-
-    // Procesar en background y responder
-    processWhatsAppImage(From, MediaUrl0, contentType);
-    return;
-  }
-
-  // Mensaje de texto genérico
-  twiml.message('Para analizar tu examen, envíame una *foto clara* del documento. Si necesitas ayuda, escribe *hola*.');
-  res.type('text/xml').send(twiml.toString());
-});
-
-async function processWhatsAppImage(to, mediaUrl, contentType) {
-  try {
-    // Descargar imagen desde Twilio
-    const imgRes = await fetch(mediaUrl, {
-      headers: {
-        Authorization: 'Basic ' + Buffer.from(
-          `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
-        ).toString('base64')
-      }
-    });
-    const buffer = await imgRes.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
-
-    const response = await anthropic.messages.create({
-      model: 'claude-opus-4-5',
-      max_tokens: 1200,
-      system: SYSTEM_PROMPT + '\n\nIMPORTANTE: Respuesta para WhatsApp — usa formato de texto plano sin markdown. Usa emojis con moderación para separar secciones.',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: contentType, data: base64 } },
-          { type: 'text', text: 'Analiza este examen médico.' }
-        ]
-      }]
-    });
-
-    const interpretation = response.content[0].text;
-
-    // Dividir respuesta larga en mensajes de máx 1600 chars (límite WhatsApp)
-    const chunks = splitMessage(interpretation, 1550);
-
-    for (let i = 0; i < chunks.length; i++) {
-      await twilioClient.messages.create({
-        from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-        to: to,
-        body: i === chunks.length - 1
-          ? chunks[i] + '\n\n_ExamIA · Solo informativo · Consulta siempre con tu médico_'
-          : chunks[i]
-      });
-      if (i < chunks.length - 1) await sleep(500);
-    }
-
-  } catch (err) {
-    console.error('Error procesando WhatsApp:', err.message);
-    await twilioClient.messages.create({
-      from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-      to: to,
-      body: 'Lo siento, hubo un problema al analizar tu examen. ¿Puedes intentar con una foto más clara? 🙏'
-    });
-  }
-}
-
-function splitMessage(text, maxLen) {
-  if (text.length <= maxLen) return [text];
-  const chunks = [];
-  let start = 0;
-  while (start < text.length) {
-    let end = start + maxLen;
-    if (end < text.length) {
-      const lastNewline = text.lastIndexOf('\n', end);
-      if (lastNewline > start) end = lastNewline;
-    }
-    chunks.push(text.slice(start, end).trim());
-    start = end + 1;
-  }
-  return chunks.filter(c => c.length > 0);
-}
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ExamIA Backend' }));
 
 app.listen(PORT, () => console.log(`ExamIA backend corriendo en puerto ${PORT}`));
