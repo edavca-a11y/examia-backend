@@ -5,101 +5,106 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 app.use(cors({ origin: process.env.FRONTEND_URL || '*', methods: ['GET', 'POST'] }));
 app.use(express.json({ limit: '15mb' }));
 
-const SYSTEM_PROMPT = `Eres ExamIA, un asistente educativo especializado en explicar resultados de exámenes médicos en lenguaje simple y claro para pacientes chilenos.
+const SYSTEM_PROMPT = `Eres ExamIA, un asistente educativo que explica exámenes médicos en lenguaje simple para pacientes chilenos.
 
 REGLAS ESTRICTAS:
 1. NUNCA diagnostiques enfermedades ni condiciones médicas
 2. NUNCA recomiendes medicamentos, dosis ni tratamientos
 3. NUNCA uses frases como "tienes X enfermedad" o "padeces de X"
-4. SIEMPRE usa lenguaje accesible, sin jerga médica innecesaria
-5. Cuando un valor está fuera de rango, explica QUÉ mide ese valor y QUÉ significa estar fuera del rango
-6. SIEMPRE termina con 2-3 preguntas concretas que el paciente puede hacerle a su médico
-7. Responde SIEMPRE en español chileno, tono cercano pero profesional
-8. Si el documento no parece ser un examen médico, indícalo amablemente
+4. Usa lenguaje simple, cercano, en español chileno
+5. Cada explicación debe enseñar algo de biología de forma interesante y fácil
 
-ESTRUCTURA DE RESPUESTA — responde con DOS secciones separadas por |||VISUAL|||:
+FORMATO DE RESPUESTA — responde con DOS bloques separados por |||VISUAL|||:
 
-SECCIÓN 1 — Explicación en texto:
-## Resumen general
-[2-3 líneas con la visión general del examen en lenguaje muy simple]
-
-## Tus valores en detalle
-[Para cada valor: nombre común, qué mide, si está normal/sobre/bajo rango, qué significa en palabras simples]
-
-## Lo que podrías preguntarle a tu médico
-[2-3 preguntas específicas basadas en ESTE examen]
+BLOQUE 1 — JSON estructurado para mostrar por secciones (solo JSON, sin markdown):
+{
+  "resumen": "2-3 oraciones simples sobre el estado general del examen. Tono tranquilo y claro.",
+  "secciones": [
+    {
+      "titulo": "Nombre del grupo (ej: Azúcar en sangre, Riñones, Glóbulos rojos)",
+      "icono": "gota|corazon|rinon|hueso|celula|tiroides|defensa|orina|coagulacion",
+      "estado": "ok|alerta|fuera",
+      "valores": [
+        {
+          "nombre": "Nombre del valor",
+          "valor": "número + unidad",
+          "referencia": "rango normal",
+          "estado": "ok|alerta|fuera",
+          "explicacion": "1 oración: qué mide este valor en palabras simples"
+        }
+      ],
+      "didactica": "1-2 oraciones curiosas sobre qué hace este sistema en el cuerpo. Ej: 'Los glóbulos rojos son como camiones que llevan oxígeno a cada célula de tu cuerpo.'"
+    }
+  ],
+  "preguntas": [
+    "Pregunta 1 para el médico",
+    "Pregunta 2 para el médico",
+    "Pregunta 3 para el médico"
+  ]
+}
 
 |||VISUAL|||
 
-SECCIÓN 2 — Solo JSON, sin markdown:
+BLOQUE 2 — JSON para infografía (solo JSON, sin markdown):
 {"scenario":"cardiovascular|metabolico|renal|oseo|hematologico","detected_scenarios":["principal","secundario_si_aplica"]}
 
-Reglas scenario: cardiovascular=colesterol/triglicéridos/corazón, metabolico=glucosa/insulina/HbA1c, renal=creatinina/urea/TFG, oseo=fracturas/densitometría/radiografías, hematologico=hemograma/hemoglobina/anemia. detected_scenarios lista todos los sistemas afectados.
+Reglas scenario: cardiovascular=colesterol/triglicéridos/corazón, metabolico=glucosa/insulina/HbA1c, renal=creatinina/urea/TFG, oseo=fracturas/densitometría, hematologico=hemograma/hemoglobina/anemia.
 
-IMPORTANTE: Esta herramienta es informativa y educativa. No reemplaza la consulta médica.`;
+IMPORTANTE: Solo JSON válido en ambos bloques. Sin texto adicional, sin markdown, sin explicaciones fuera del JSON.`;
 
 app.post('/analyze', async (req, res) => {
-  const { file, mediaType, fileName } = req.body;
+  const { file, mediaType } = req.body;
+  if (!file || !mediaType) return res.status(400).json({ error: 'Falta el archivo o el tipo de medio' });
 
-  if (!file || !mediaType) {
-    return res.status(400).json({ error: 'Falta el archivo o el tipo de medio' });
-  }
-
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'];
-  if (!allowedTypes.includes(mediaType)) {
-    return res.status(400).json({ error: 'Tipo de archivo no soportado' });
-  }
+  const allowed = ['image/jpeg','image/jpg','image/png','image/webp','application/pdf'];
+  if (!allowed.includes(mediaType)) return res.status(400).json({ error: 'Tipo de archivo no soportado' });
 
   try {
-    let messageContent;
-
-    if (mediaType === 'application/pdf') {
-      messageContent = [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file } },
-        { type: 'text', text: 'Por favor analiza este examen médico y explícalo siguiendo las instrucciones del sistema.' }
-      ];
-    } else {
-      messageContent = [
-        { type: 'image', source: { type: 'base64', media_type: mediaType, data: file } },
-        { type: 'text', text: 'Por favor analiza este examen médico y explícalo siguiendo las instrucciones del sistema.' }
-      ];
-    }
+    const content = mediaType === 'application/pdf'
+      ? [{ type:'document', source:{ type:'base64', media_type:'application/pdf', data:file } }, { type:'text', text:'Analiza este examen médico.' }]
+      : [{ type:'image', source:{ type:'base64', media_type:mediaType, data:file } }, { type:'text', text:'Analiza este examen médico.' }];
 
     const response = await anthropic.messages.create({
       model: 'claude-opus-4-5',
-      max_tokens: 1500,
+      max_tokens: 2000,
       system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: messageContent }]
+      messages: [{ role:'user', content }]
     });
 
     const fullText = response.content[0].text;
-    const [interpretationRaw, visualRaw] = fullText.split('|||VISUAL|||');
-    const interpretation = interpretationRaw.trim();
+    const parts = fullText.split('|||VISUAL|||');
 
+    let interpretation = null;
     let visual = null;
-    if (visualRaw) {
+
+    try {
+      const clean1 = parts[0].trim().replace(/```json|```/g,'').trim();
+      interpretation = JSON.parse(clean1);
+    } catch(e) {
+      interpretation = { resumen: fullText, secciones: [], preguntas: [] };
+    }
+
+    if (parts[1]) {
       try {
-        const jsonStr = visualRaw.trim().replace(/```json|```/g, '').trim();
-        visual = JSON.parse(jsonStr);
-      } catch (e) {
-        visual = { scenario: 'cardiovascular', detected_scenarios: ['cardiovascular'] };
+        const clean2 = parts[1].trim().replace(/```json|```/g,'').trim();
+        visual = JSON.parse(clean2);
+      } catch(e) {
+        visual = { scenario:'hematologico', detected_scenarios:['hematologico'] };
       }
     }
 
     res.json({ interpretation, visual, success: true });
 
-  } catch (err) {
-    console.error('Error al analizar:', err.message);
+  } catch(err) {
+    console.error('Error:', err.message);
     res.status(500).json({ error: 'No se pudo procesar el examen. Intenta de nuevo.' });
   }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ExamIA Backend' }));
-
+app.get('/health', (req, res) => res.json({ status:'ok', service:'ExamIA Backend' }));
 app.listen(PORT, () => console.log(`ExamIA backend corriendo en puerto ${PORT}`));
