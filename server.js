@@ -46,6 +46,12 @@ REGLAS ABSOLUTAS:
 - scenario debe ser uno de: cardiovascular, metabolico, renal, oseo, hematologico
 - NUNCA diagnostiques ni recomiendes medicamentos
 - Usa español chileno simple
+- Máximo 8 secciones en total
+- Máximo 4 valores por sección — agrupa los menos importantes
+- "resumen" máximo 2 oraciones cortas
+- "didactica" máximo 1 oración corta
+- "explicacion" de cada valor: máximo 8 palabras
+- "preguntas" exactamente 3 preguntas cortas
 - icono para tiroides: "tiroides"
 - icono para inflamacion/VHS: "defensa"
 - icono para orina: "orina"
@@ -65,7 +71,7 @@ app.post('/analyze', async (req, res) => {
 
     const response = await anthropic.messages.create({
       model: 'claude-opus-4-5',
-      max_tokens: 2500,
+      max_tokens: 4000,
       system: SYSTEM_PROMPT,
       messages: [{ role:'user', content }]
     });
