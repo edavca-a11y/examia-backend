@@ -82,17 +82,31 @@ app.post('/analyze', async (req, res) => {
     let interpretation = null;
     let visual = null;
 
+    // Parsear bloque 1 — JSON de secciones
     try {
-      const clean1 = parts[0].trim().replace(/```json|```/g,'').trim();
-      interpretation = JSON.parse(clean1);
+      const raw1 = parts[0].trim().replace(/```json|```/g,'').trim();
+      // Buscar el JSON aunque haya texto antes o después
+      const jsonStart = raw1.indexOf('{');
+      const jsonEnd = raw1.lastIndexOf('}');
+      if(jsonStart !== -1 && jsonEnd !== -1) {
+        interpretation = JSON.parse(raw1.slice(jsonStart, jsonEnd+1));
+      } else {
+        throw new Error('No JSON found');
+      }
     } catch(e) {
-      interpretation = { resumen: fullText, secciones: [], preguntas: [] };
+      console.error('Error parseando interpretación:', e.message);
+      interpretation = { resumen: parts[0].trim(), secciones: [], preguntas: [] };
     }
 
+    // Parsear bloque 2 — JSON visual
     if (parts[1]) {
       try {
-        const clean2 = parts[1].trim().replace(/```json|```/g,'').trim();
-        visual = JSON.parse(clean2);
+        const raw2 = parts[1].trim().replace(/```json|```/g,'').trim();
+        const jsonStart = raw2.indexOf('{');
+        const jsonEnd = raw2.lastIndexOf('}');
+        if(jsonStart !== -1 && jsonEnd !== -1) {
+          visual = JSON.parse(raw2.slice(jsonStart, jsonEnd+1));
+        }
       } catch(e) {
         visual = { scenario:'hematologico', detected_scenarios:['hematologico'] };
       }
