@@ -133,5 +133,100 @@ app.post('/analyze', async (req, res) => {
   }
 });
 
+// ── PLANES ────────────────────────────────────────────────────────────────────
+const PLANES = {
+  individual: { nombre: 'Individual', precio: 3990, moneda: 'CLP' },
+  familiar:   { nombre: 'Familiar',   precio: 6990, moneda: 'CLP' }
+};
+
+// Crear preferencia de pago (suscripción mensual)
+app.post('/crear-suscripcion', async (req, res) => {
+  const { plan, userId, userEmail } = req.body;
+  if (!plan || !userId || !userEmail) return res.status(400).json({ error: 'Faltan datos' });
+  if (!PLANES[plan]) return res.status(400).json({ error: 'Plan no válido' });
+
+  try {
+    const planInfo = PLANES[plan];
+    const response = await fetch('https://api.mercadopago.com/preapproval_plan', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({
+        reason: `ExamIA ${planInfo.nombre}`,
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: 'months',
+          transaction_amount: planInfo.precio,
+          currency_id: 'CLP'
+        },
+        back_url: `${process.env.FRONTEND_URL || 'https://exam-i-a.com'}`,
+        external_reference: `${userId}|${plan}`
+      })
+    });
+
+    const data = await response.json();
+    if (data.init_point) {
+      res.json({ init_point: data.init_point, id: data.id });
+    } else {
+      console.error('MP error:', JSON.stringify(data));
+      res.status(500).json({ error: 'No se pudo crear la suscripción' });
+    }
+  } catch(err) {
+    console.error('Error MP:', err.message);
+    res.status(500).json({ error: 'Error al conectar con Mercado Pago' });
+  }
+});
+
+// Webhook de Mercado Pago — confirma pagos
+app.post('/webhook-mp', async (req, res) => {
+  const { type, data } = req.body;
+  console.log('Webhook MP:', type, data?.id);
+  
+  if (type === 'subscription_preapproval') {
+    try {
+      const mpRes = await fetch(`https://api.mercadopago.com/preapproval/${data.id}`, {
+        headers: { 'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}` }
+      });
+      const sub = await mpRes.json();
+      
+      if (sub.external_reference) {
+        const [userId, plan] = sub.external_reference.split('|');
+        const estado = sub.status === 'authorized' ? 'activo' : 'cancelado';
+        
+        const { createClient } = require('@supabase/supabase-js');
+        const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+        
+        await sb.from('suscripciones').upsert({
+          user_id: userId,
+          plan,
+          estado,
+          mp_preapproval_id: data.id,
+          fecha_inicio: new Date().toISOString()
+        }, { onConflict: 'user_id' });
+        
+        await sb.from('profiles').update({ plan: estado === 'activo' ? plan : 'gratis' }).eq('id', userId);
+      }
+    } catch(err) {
+      console.error('Webhook error:', err.message);
+    }
+  }
+  res.sendStatus(200);
+});
+
+// Verificar plan del usuario
+app.get('/plan/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+    const { data } = await sb.from('profiles').select('plan, analisis_mes, mes_reset').eq('id', userId).single();
+    res.json(data || { plan: 'gratis', analisis_mes: 0 });
+  } catch(err) {
+    res.json({ plan: 'gratis', analisis_mes: 0 });
+  }
+});
+
 app.get('/health', (req, res) => res.json({ status:'ok', service:'ExamIA Backend' }));
 app.listen(PORT, () => console.log(`ExamIA backend corriendo en puerto ${PORT}`));
