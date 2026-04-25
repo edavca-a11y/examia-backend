@@ -58,11 +58,31 @@ REGLAS ABSOLUTAS:
 - icono para coagulacion: "coagulacion"`;
 
 app.post('/analyze', async (req, res) => {
-  const { file, mediaType } = req.body;
+  const { file, mediaType, userId } = req.body;
   if (!file || !mediaType) return res.status(400).json({ error: 'Falta archivo' });
 
   const allowed = ['image/jpeg','image/jpg','image/png','image/webp','application/pdf'];
   if (!allowed.includes(mediaType)) return res.status(400).json({ error: 'Tipo no soportado' });
+
+  // Verificar límite plan gratuito
+  if (userId) {
+    try {
+      const { createClient } = require('@supabase/supabase-js');
+      const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+      const { data: profile } = await sb.from('profiles').select('plan, analisis_mes, mes_reset').eq('id', userId).single();
+      if (profile && profile.plan === 'gratis') {
+        const hoy = new Date();
+        const mesReset = profile.mes_reset ? new Date(profile.mes_reset) : null;
+        let analisisMes = profile.analisis_mes || 0;
+        if (!mesReset || hoy.getMonth() !== mesReset.getMonth() || hoy.getFullYear() !== mesReset.getFullYear()) {
+          analisisMes = 0;
+          await sb.from('profiles').update({ analisis_mes: 0, mes_reset: hoy.toISOString().split('T')[0] }).eq('id', userId);
+        }
+        if (analisisMes >= 5) return res.status(403).json({ error: 'limite_alcanzado', mensaje: 'Alcanzaste el límite de 5 análisis gratuitos este mes.' });
+        await sb.from('profiles').update({ analisis_mes: analisisMes + 1 }).eq('id', userId);
+      }
+    } catch(e) { console.error('Error verificando límite:', e.message); }
+  }
 
   try {
     const content = mediaType === 'application/pdf'
