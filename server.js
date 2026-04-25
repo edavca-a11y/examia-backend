@@ -155,11 +155,11 @@ app.post('/analyze', async (req, res) => {
 
 // ── PLANES ────────────────────────────────────────────────────────────────────
 const PLANES = {
-  individual: { nombre: 'Individual', precio: 3990, moneda: 'CLP' },
-  familiar:   { nombre: 'Familiar',   precio: 6990, moneda: 'CLP' }
+  individual: { nombre: 'Plan Individual ExamIA', precio: 3990, moneda: 'CLP' },
+  familiar:   { nombre: 'Plan Familiar ExamIA',   precio: 6990, moneda: 'CLP' }
 };
 
-// Crear preferencia de pago (suscripción mensual)
+// Crear preferencia de pago con Checkout Pro
 app.post('/crear-suscripcion', async (req, res) => {
   const { plan, userId, userEmail } = req.body;
   if (!plan || !userId || !userEmail) return res.status(400).json({ error: 'Faltan datos' });
@@ -167,31 +167,41 @@ app.post('/crear-suscripcion', async (req, res) => {
 
   try {
     const planInfo = PLANES[plan];
-    const response = await fetch('https://api.mercadopago.com/preapproval_plan', {
+    const backUrl = process.env.FRONTEND_URL !== '*' ? process.env.FRONTEND_URL : 'https://comfy-otter-023493.netlify.app';
+
+    const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}`
       },
       body: JSON.stringify({
-        reason: `ExamIA ${planInfo.nombre}`,
-        auto_recurring: {
-          frequency: 1,
-          frequency_type: 'months',
-          transaction_amount: planInfo.precio,
+        items: [{
+          title: planInfo.nombre,
+          quantity: 1,
+          unit_price: planInfo.precio,
           currency_id: 'CLP'
+        }],
+        payer: { email: userEmail },
+        back_urls: {
+          success: `${backUrl}?pago=exitoso&plan=${plan}&user=${userId}`,
+          failure: `${backUrl}?pago=fallido`,
+          pending: `${backUrl}?pago=pendiente`
         },
-        back_url: `${process.env.FRONTEND_URL || 'https://exam-i-a.com'}`,
-        external_reference: `${userId}|${plan}`
+        auto_return: 'approved',
+        external_reference: `${userId}|${plan}`,
+        notification_url: 'https://examia-backend.onrender.com/webhook-mp'
       })
     });
 
     const data = await response.json();
+    console.log('MP preference response:', JSON.stringify(data).substring(0, 200));
+
     if (data.init_point) {
       res.json({ init_point: data.init_point, id: data.id });
     } else {
       console.error('MP error:', JSON.stringify(data));
-      res.status(500).json({ error: 'No se pudo crear la suscripción' });
+      res.status(500).json({ error: 'No se pudo crear el pago', detalle: data.message || 'Error desconocido' });
     }
   } catch(err) {
     console.error('Error MP:', err.message);
@@ -199,34 +209,30 @@ app.post('/crear-suscripcion', async (req, res) => {
   }
 });
 
-// Webhook de Mercado Pago — confirma pagos
+// Webhook de Mercado Pago
 app.post('/webhook-mp', async (req, res) => {
   const { type, data } = req.body;
   console.log('Webhook MP:', type, data?.id);
-  
-  if (type === 'subscription_preapproval') {
+
+  if (type === 'payment' && data?.id) {
     try {
-      const mpRes = await fetch(`https://api.mercadopago.com/preapproval/${data.id}`, {
+      const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${data.id}`, {
         headers: { 'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}` }
       });
-      const sub = await mpRes.json();
-      
-      if (sub.external_reference) {
-        const [userId, plan] = sub.external_reference.split('|');
-        const estado = sub.status === 'authorized' ? 'activo' : 'cancelado';
-        
+      const payment = await mpRes.json();
+      console.log('Payment status:', payment.status, 'ref:', payment.external_reference);
+
+      if (payment.status === 'approved' && payment.external_reference) {
+        const [userId, plan] = payment.external_reference.split('|');
         const { createClient } = require('@supabase/supabase-js');
         const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-        
+        await sb.from('profiles').update({ plan }).eq('id', userId);
         await sb.from('suscripciones').upsert({
-          user_id: userId,
-          plan,
-          estado,
-          mp_preapproval_id: data.id,
+          user_id: userId, plan, estado: 'activo',
+          mp_preapproval_id: String(data.id),
           fecha_inicio: new Date().toISOString()
         }, { onConflict: 'user_id' });
-        
-        await sb.from('profiles').update({ plan: estado === 'activo' ? plan : 'gratis' }).eq('id', userId);
+        console.log(`Plan ${plan} activado para usuario ${userId}`);
       }
     } catch(err) {
       console.error('Webhook error:', err.message);
