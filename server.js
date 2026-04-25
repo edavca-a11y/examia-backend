@@ -153,7 +153,32 @@ app.post('/analyze', async (req, res) => {
   }
 });
 
-// ── PLANES ────────────────────────────────────────────────────────────────────
+// ── VALIDAR SI ES EXAMEN MÉDICO ───────────────────────────────────────────────
+app.post('/validar-examen', async (req, res) => {
+  const { file, mediaType } = req.body;
+  if (!file || !mediaType) return res.status(400).json({ esMedico: true });
+
+  try {
+    const content = mediaType === 'application/pdf'
+      ? [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file } },
+         { type: 'text', text: '¿Este documento es un examen médico, resultado de laboratorio, imagen médica o informe clínico? Responde SOLO con "si" o "no".' }]
+      : [{ type: 'image', source: { type: 'base64', media_type: mediaType, data: file } },
+         { type: 'text', text: '¿Esta imagen es un examen médico, resultado de laboratorio o documento médico? Responde SOLO con "si" o "no".' }];
+
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 10,
+      messages: [{ role: 'user', content }]
+    });
+
+    const respuesta = response.content[0].text.toLowerCase().trim();
+    const esMedico = respuesta.includes('si') || respuesta.includes('sí') || respuesta.includes('yes');
+    res.json({ esMedico });
+  } catch(err) {
+    console.error('Error validando:', err.message);
+    res.json({ esMedico: true }); // en caso de error, permitir análisis
+  }
+});
 const PLANES = {
   individual: { nombre: 'Plan Individual ExamIA', precio: 3990, moneda: 'CLP' },
   familiar:   { nombre: 'Plan Familiar ExamIA',   precio: 6990, moneda: 'CLP' }
