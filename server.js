@@ -159,24 +159,32 @@ app.post('/validar-examen', async (req, res) => {
   if (!file || !mediaType) return res.status(400).json({ esMedico: true });
 
   try {
+    const textoClasificacion = `Este es un documento. Debes clasificarlo en una de dos categorías:
+A) EXAMEN MÉDICO: resultado de laboratorio clínico, hemograma, bioquímica, análisis de sangre u orina, perfil lipídico, glicemia, creatinina, radiografía, ecografía, resonancia magnética, informe médico de salud de una persona.
+B) OTRO DOCUMENTO: guía de despacho, factura, boleta, contrato, carta, informe de empresa, documento de transporte, pedido comercial, licitación, presupuesto, o cualquier otro documento no médico.
+
+Responde ÚNICAMENTE con la letra "A" si es un examen médico, o "B" si es cualquier otro tipo de documento. Sin explicación.`;
+
     const content = mediaType === 'application/pdf'
       ? [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file } },
-         { type: 'text', text: '¿Este documento es un examen médico, resultado de laboratorio, imagen médica o informe clínico? Responde SOLO con "si" o "no".' }]
+         { type: 'text', text: textoClasificacion }]
       : [{ type: 'image', source: { type: 'base64', media_type: mediaType, data: file } },
-         { type: 'text', text: '¿Esta imagen es un examen médico, resultado de laboratorio o documento médico? Responde SOLO con "si" o "no".' }];
+         { type: 'text', text: textoClasificacion }];
 
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 10,
+      max_tokens: 5,
+      system: 'Eres un clasificador de documentos. Solo respondes con una letra: A si es examen médico, B si es cualquier otro documento.',
       messages: [{ role: 'user', content }]
     });
 
-    const respuesta = response.content[0].text.toLowerCase().trim();
-    const esMedico = respuesta.includes('si') || respuesta.includes('sí') || respuesta.includes('yes');
+    const respuesta = response.content[0].text.trim().toUpperCase();
+    console.log('Validación médica resultado:', respuesta);
+    const esMedico = respuesta.startsWith('A');
     res.json({ esMedico });
   } catch(err) {
     console.error('Error validando:', err.message);
-    res.json({ esMedico: true }); // en caso de error, permitir análisis
+    res.json({ esMedico: true });
   }
 });
 const PLANES = {
